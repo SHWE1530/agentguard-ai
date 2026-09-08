@@ -1,0 +1,59 @@
+{
+  "policy_version": "1.2.0",
+  "agent": "OpsAssist-Agent",
+  "description": "Guardrail policy for the simulated IT-maintenance agent. Edit this file to change enforcement without touching code.",
+
+  "allowed_actions": [
+    "CHECK_SERVER_HEALTH",
+    "READ_LOG",
+    "CHECK_SERVICE_STATUS",
+    "CREATE_TICKET",
+    "RESTART_SIMULATED_SERVICE",
+    "CLEAR_TEMP_FILES",
+    "SCALE_SIMULATED_SERVICE",
+    "FAILOVER_DATABASE"
+  ],
+
+  "require_human_approval": ["FAILOVER_DATABASE"],
+
+  "always_block": [
+    "DELETE_DATABASE",
+    "DISABLE_SECURITY",
+    "MODIFY_PERMISSION",
+    "EXPORT_DATA",
+    "EXECUTE_UNKNOWN_COMMAND"
+  ],
+
+  "max_permission_level": "privileged",
+
+  "task_scope": {
+    "allowed_resource_prefixes": ["infra/", "logs/", "tickets/", "db/"],
+    "min_task_relevance": 0.35
+  },
+
+  "thresholds": {
+    "risk_levels": { "low": 0, "medium": 30, "high": 60, "critical": 85 },
+    "anomaly_alert": 0.6
+  },
+
+  "risk_weights": {
+    "behavior_anomaly": 0.30,
+    "resource_sensitivity": 0.18,
+    "permission_risk": 0.16,
+    "action_severity": 0.22,
+    "task_relevance_gap": 0.14
+  },
+
+  "policy_violation_penalty": 22,
+  "destructive_action_floor": 88,
+
+  "//max_blocked_actions_per_session": "A single blocked action is not proof of compromise; a pattern of them is. After this many blocks in one session the agent is paused for human review.",
+  "max_blocked_actions_per_session": 3,
+
+  "level_actions": {
+    "LOW": "ALLOW",
+    "MEDIUM": "MONITOR",
+    "HIGH": "REQUIRE_APPROVAL",
+    "CRITICAL": "BLOCK_AND_STOP"
+  }
+}
