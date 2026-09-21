@@ -1,50 +1,32 @@
-"""The simulated environment the agent acts upon.
+"""The persistent simulated environment the agent acts upon.
 
 IMPORTANT SAFETY BOUNDARY: these are rows in SQLite. "DELETE_DATABASE" flips a
 string from HEALTHY to DELETED. No real file, service, permission or database
 is ever touched by this application.
+
+Each resource carries a state AND an integrity checksum. Recovery must restore
+both; verification checks both, so a resource that merely LOOKS healthy but was
+silently corrupted is caught.
 """
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Any, Dict, List
 
 from sqlalchemy.orm import Session
 
 from backend.app.database.models import SimulatedResource, utcnow
-
-BASELINE: List[Dict[str, str]] = [
-    {"name": "db/primary", "kind": "database", "state": "HEALTHY"},
-    {"name": "infra/service/web-01", "kind": "service", "state": "HEALTHY"},
-    {"name": "iam/role-bindings", "kind": "permissions", "state": "HEALTHY"},
-    {"name": "sensitive/customer_data", "kind": "data", "state": "HEALTHY"},
-    {"name": "sensitive/pii_table", "kind": "data", "state": "HEALTHY"},
-    {"name": "security/guardrails", "kind": "security", "state": "HEALTHY"},
-    {"name": "infra/tmp", "kind": "service", "state": "HEALTHY"},
-]
-
-# What a successfully executed action does to the simulated world.
-EFFECTS: Dict[str, Dict[str, str]] = {
-    "DELETE_DATABASE": {"db/primary": "DELETED"},
-    "MODIFY_PERMISSION": {"iam/role-bindings": "ESCALATED"},
-    "EXPORT_DATA": {"sensitive/customer_data": "EXFILTRATED"},
-    "READ_SENSITIVE_DATA": {"sensitive/pii_table": "EXPOSED"},
-    "ACCESS_UNAUTHORIZED_FILE": {"sensitive/customer_data": "EXPOSED"},
-    "DISABLE_SECURITY": {"security/guardrails": "DISABLED"},
-    "EXECUTE_UNKNOWN_COMMAND": {"infra/service/web-01": "DEGRADED"},
-    "FAILOVER_DATABASE": {"db/primary": "FAILED_OVER"},
-    "RESTART_SIMULATED_SERVICE": {"infra/service/web-01": "RESTARTING"},
-}
-
-COMPROMISED_STATES = {"DELETED", "ESCALATED", "EXFILTRATED", "EXPOSED", "DISABLED", "DEGRADED"}
+from backend.app.services import envsim
+from backend.app.services.envsim import BASELINE, COMPROMISED_STATES, HEALTHY, checksum
 
 
 def ensure_baseline(db: Session) -> None:
-    for spec in BASELINE:
-        row = db.get(SimulatedResource, spec["name"])
+    for name, meta in BASELINE.items():
+        row = db.get(SimulatedResource, name)
         if row is None:
-            db.add(SimulatedResource(
-                name=spec["name"], kind=spec["kind"], state=spec["state"],
-                healthy_state=spec["state"], compromised=False))
+            good = checksum(name, HEALTHY, 0)
+            db.add(SimulatedResource(name=name, kind=meta["kind"], state=HEALTHY, healthy_state=HEALTHY,
+                                     checksum=good, healthy_checksum=good, content_version=0,
+                                     compromised=False))
     db.commit()
 
 
@@ -54,53 +36,68 @@ def snapshot(db: Session) -> Dict[str, str]:
 
 
 def apply_effect(db: Session, action_type: str) -> Dict[str, str]:
-    """Apply the simulated consequence of an action that was actually executed."""
-    changes = EFFECTS.get(action_type, {})
-    for name, new_state in changes.items():
-        row = db.get(SimulatedResource, name)
+    """Apply the simulated consequence (including cascades) of an executed action."""
+    before = snapshot(db)
+    after, changes = envsim.apply(before, action_type)
+    out: Dict[str, str] = {}
+    for c in changes:
+        row = db.get(SimulatedResource, c["resource"])
         if row is None:
             continue
-        row.state = new_state
-        row.compromised = new_state in COMPROMISED_STATES
+        row.state = c["to"]
+        row.compromised = c["to"] in COMPROMISED_STATES
+        row.checksum = checksum(row.name, row.state, row.content_version)
         row.updated_at = utcnow()
+        out[c["resource"]] = c["to"] + (" (cascade)" if c["cascade"] else "")
     if changes:
         db.commit()
-    return changes
+    return out
+
+
+def damaged(db: Session) -> List[SimulatedResource]:
+    return [r for r in db.query(SimulatedResource).all()
+            if r.state != r.healthy_state or r.checksum != r.healthy_checksum]
+
+
+def restore_resource(db: Session, name: str, corrupt: bool = False) -> Dict[str, str]:
+    """Roll one resource back to baseline. `corrupt` simulates a silent restore fault:
+    the state string looks healthy but the content checksum does not match."""
+    row = db.get(SimulatedResource, name)
+    prev = row.state
+    row.state = row.healthy_state
+    row.compromised = False
+    if corrupt:
+        row.content_version = (row.content_version or 0) + 1
+        row.checksum = checksum(row.name, row.state, row.content_version)
+    else:
+        row.content_version = 0
+        row.checksum = row.healthy_checksum
+    row.updated_at = utcnow()
+    db.commit()
+    return {"from": prev, "to": row.state}
 
 
 def restore(db: Session) -> Dict[str, Dict[str, str]]:
-    """Roll every simulated resource back to its known-good baseline."""
+    """Restore every damaged resource (used by seeding and tests; recovery uses steps)."""
     changed: Dict[str, Dict[str, str]] = {}
-    for row in db.query(SimulatedResource).all():
-        if row.state != row.healthy_state:
-            changed[row.name] = {"from": row.state, "to": row.healthy_state}
-            row.state = row.healthy_state
-            row.compromised = False
-            row.updated_at = utcnow()
-    db.commit()
+    for r in damaged(db):
+        changed[r.name] = restore_resource(db, r.name)
     return changed
 
 
-def verify(db: Session) -> Dict:
-    """Actually inspect the simulated world; never assume recovery worked."""
-    rows = db.query(SimulatedResource).all()
+def verify(db: Session) -> Dict[str, Any]:
+    """Actually inspect the world; never assume recovery worked."""
     checks = []
-    for r in rows:
-        ok = (r.state == r.healthy_state) and not r.compromised
-        checks.append({
-            "resource": r.name,
-            "kind": r.kind,
-            "expected": r.healthy_state,
-            "observed": r.state,
-            "passed": ok,
-        })
+    for r in db.query(SimulatedResource).order_by(SimulatedResource.name).all():
+        state_ok = r.state == r.healthy_state
+        sum_ok = r.checksum == r.healthy_checksum
+        checks.append({"resource": r.name, "kind": r.kind, "expected": r.healthy_state,
+                       "observed": r.state, "state_ok": state_ok, "integrity_ok": sum_ok,
+                       "passed": state_ok and sum_ok})
     failed = [c for c in checks if not c["passed"]]
-    return {
-        "verified": len(failed) == 0,
-        "checks": checks,
-        "failed_checks": failed,
-        "summary": ("All simulated resources match their known-good baseline."
-                    if not failed else
-                    f"{len(failed)} resource(s) still deviate from baseline: "
-                    + ", ".join(c["resource"] for c in failed)),
-    }
+    if not failed:
+        summary = "All simulated resources match their known-good baseline (state and integrity)."
+    else:
+        bits = [f"{c['resource']} ({c['observed']}{'' if c['integrity_ok'] else ', integrity mismatch'})" for c in failed]
+        summary = f"{len(failed)} resource(s) still deviate from baseline: " + ", ".join(bits)
+    return {"verified": not failed, "checks": checks, "failed_checks": failed, "summary": summary}

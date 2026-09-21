@@ -1,88 +1,65 @@
-"""Behavioural feature extraction for the anomaly detector.
+"""Behavioural feature extraction for the anomaly detector (v2).
 
-Every agent action is turned into a fixed-length numeric vector. The same
-function is used by the dataset generator, the training script and the live
-backend, so training and inference can never drift apart.
+One fixed-length vector per attempted action. The SAME function is used by the
+dataset pipeline, the trainer, the evaluator and the live backend, so training
+and inference cannot drift apart.
+
+v2 adds what v1 lacked: sequence context (learned bigram/trigram surprisal from
+the agent's OWN fingerprint, not a hand-written table), window statistics,
+intent alignment, and agent-specific novelty. Everything is scaled to 0..1.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import List, Optional
+from typing import Dict, List
 
-from backend.app.agent.catalog import (
-    CATEGORY_INDEX,
-    PERMISSION_LEVELS,
-    get_spec,
-    sequence_deviation,
-)
+from backend.app.agent.catalog import CATEGORIES, CATEGORY_INDEX, ActionSpec, permission_value
+from backend.app.services.fingerprint import Fingerprint
+from backend.app.services.sequence import window_stats
+from backend.app.services.steps import StepRec
 
-# Names must stay aligned with build_feature_vector()
 FEATURE_NAMES: List[str] = [
-    "permission_level",       # 0..1 ordinal encoding of the requested privilege
-    "resource_sensitivity",   # 0..1 how sensitive the touched resource is
-    "action_severity",        # 0..1 blast radius of the action
-    "task_relevance",         # 0..1 how well the action serves the assigned task
-    "sequence_deviation",     # 0..1 unlikelihood of prev_action -> action
-    "repeated_action_count",  # normalised count of identical actions in session
-    "time_since_prev",        # normalised seconds since previous action
-    "tool_rarity",            # 0..1 how unusual this tool is for the agent
-    "step_position",          # normalised position of the action in the session
-    "is_destructive",         # 0/1
-] + [f"cat_{c}" for c in CATEGORY_INDEX]   # one-hot action category
+    "permission_level", "resource_sensitivity", "action_severity", "intent_alignment",
+    "seq_bigram_deviation", "seq_trigram_novel", "repeat_ratio", "time_since_prev",
+    "burstiness", "tool_rarity", "novel_resource", "step_position", "is_destructive",
+    "window_max_sensitivity", "window_perm_rise", "window_sensitive_count",
+    "recent_failure_ratio", "window_misalignment",
+] + [f"cat_{c}" for c in CATEGORIES]
 
 FEATURE_DIM = len(FEATURE_NAMES)
 
-# Tool frequency profile observed during sanctioned operation.
-NORMAL_TOOL_FREQUENCY = {
-    "ops.health_probe": 0.22,
-    "ops.log_reader": 0.20,
-    "ops.service_probe": 0.20,
-    "ops.ticketing": 0.15,
-    "ops.disk_janitor": 0.12,
-    "ops.service_control": 0.06,
-    "ops.autoscaler": 0.05,
-}
 
-
-@dataclass
-class ActionContext:
-    """Everything the feature extractor needs about one attempted action."""
-    action_type: str
-    prev_action: Optional[str] = None
-    repeated_count: int = 0          # identical actions already seen this session
-    seconds_since_prev: float = 3.0
-    step_index: int = 0              # 0-based position in the session
-    task_relevance: Optional[float] = None   # override; defaults to catalog value
-    resource: Optional[str] = None
-    permission_level: Optional[str] = None
-
-
-def tool_rarity(tool_name: str) -> float:
-    freq = NORMAL_TOOL_FREQUENCY.get(tool_name, 0.0)
-    if freq <= 0.0:
-        return 1.0
-    return float(max(0.0, min(1.0, 1.0 - freq / 0.22)))
-
-
-def build_feature_vector(ctx: ActionContext) -> List[float]:
-    spec = get_spec(ctx.action_type)
-    perm = ctx.permission_level or spec.permission_level
-    relevance = spec.base_relevance if ctx.task_relevance is None else ctx.task_relevance
-
-    vec = [
-        PERMISSION_LEVELS.get(perm, 0.5),
+def build_feature_vector(spec: ActionSpec, hist: List[StepRec], fp: Fingerprint) -> List[float]:
+    """`hist` includes the NEW step as its last element."""
+    new = hist[-1]
+    prev = hist[-2].action if len(hist) > 1 else None
+    prev2 = hist[-3].action if len(hist) > 2 else None
+    w = window_stats(hist)
+    vec: List[float] = [
+        permission_value(spec.permission_level),
         spec.resource_sensitivity,
         spec.severity,
-        float(max(0.0, min(1.0, relevance))),
-        sequence_deviation(ctx.prev_action, ctx.action_type),
-        float(min(1.0, ctx.repeated_count / 5.0)),
-        float(min(1.0, ctx.seconds_since_prev / 30.0)),
-        tool_rarity(spec.tool_name),
-        float(min(1.0, ctx.step_index / 12.0)),
+        new.alignment,
+        fp.seq_deviation(prev, spec.action_type),
+        fp.trigram_novel(prev2, prev, spec.action_type),
+        w["repeat_ratio"],
+        min(1.0, new.dt / 30.0),
+        w["burstiness"],
+        fp.tool_rarity(spec.tool_name),
+        fp.novel_resource(new.prefix),
+        min(1.0, (len(hist) - 1) / 12.0),
         1.0 if spec.destructive else 0.0,
+        w["window_max_sensitivity"],
+        w["window_perm_rise"],
+        w["window_sensitive_count"],
+        w["recent_failure_ratio"],
+        w["window_misalignment"],
     ]
-    onehot = [0.0] * len(CATEGORY_INDEX)
+    onehot = [0.0] * len(CATEGORIES)
     onehot[CATEGORY_INDEX[spec.category]] = 1.0
     vec.extend(onehot)
     assert len(vec) == FEATURE_DIM
     return vec
+
+
+def as_named(vec: List[float]) -> Dict[str, float]:
+    return dict(zip(FEATURE_NAMES, vec))

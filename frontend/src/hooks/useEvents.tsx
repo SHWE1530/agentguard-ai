@@ -3,6 +3,7 @@ import {
   type ReactNode,
 } from 'react'
 import { wsUrl } from '../services/api'
+import { useAuth } from './useAuth'
 import type { LiveEvent } from '../types'
 
 type Status = 'connecting' | 'open' | 'closed'
@@ -28,6 +29,7 @@ const MAX_EVENTS = 300
  * subscribe rather than opening their own sockets.
  */
 export function EventsProvider({ children }: { children: ReactNode }) {
+  const { token, authorised } = useAuth()
   const [status, setStatus] = useState<Status>('connecting')
   const [events, setEvents] = useState<LiveEvent[]>([])
   const handlers = useRef(new Set<Handler>())
@@ -101,13 +103,13 @@ export function EventsProvider({ children }: { children: ReactNode }) {
       }, delay)
     }
 
-    connect()
+    if (authorised) connect()
     return () => {
       disposed = true
       if (retry.current !== null) window.clearTimeout(retry.current)
       socket.current?.close()
     }
-  }, [])
+  }, [token, authorised])
 
   const value = useMemo(() => ({ status, events, subscribe }), [status, events, subscribe])
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>

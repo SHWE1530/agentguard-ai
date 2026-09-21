@@ -1,80 +1,47 @@
-import {
-  ArrowLeft, BrainCircuit, Loader2, PlayCircle, RotateCcw, Siren, SkipForward,
-} from 'lucide-react'
+import { ArrowLeft, BrainCircuit, Loader2, PlayCircle, RotateCcw, Siren } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { ActionRow, SequenceDeviation } from '../components/ActionStream'
-import {
-  Bar, Card, ErrorState, Loading, RISK_COLOR, RiskMeter, VerifyBadge, fmtDateTime, fmtTime,
-} from '../components/ui'
+import { CounterfactualPanel, FactorBars, MatchedRules, ZeroTrustPanel } from '../components/analysis'
+import { BehaviorGraph } from '../components/BehaviorGraph'
+import { RecoveryChecklist } from '../components/RecoveryChecklist'
+import { ReplayPlayer } from '../components/ReplayPlayer'
+import { Card, ErrorState, Loading, RISK_COLOR, RiskMeter, fmtDateTime, fmtTime } from '../components/ui'
 import { useApi } from '../hooks/useApi'
 import { useEventListener } from '../hooks/useEvents'
 import { ApiError, api } from '../services/api'
-import type { RiskLevel } from '../types'
-
-const FACTOR_LABEL: Record<string, string> = {
-  behavior_anomaly: 'Behaviour anomaly (ML)',
-  resource_sensitivity: 'Resource sensitivity',
-  permission_risk: 'Permission risk',
-  action_severity: 'Action severity',
-  task_relevance_gap: 'Task relevance gap',
-}
+import type { Analysis, RecoveryResult, RecoveryStep, RiskLevel } from '../types'
 
 const EVENT_COLOR: Record<string, string> = {
-  ACTION_BLOCKED: '#ef4444',
-  AGENT_PAUSED: '#ef4444',
-  INCIDENT_CREATED: '#ef4444',
-  POLICY_VIOLATION: '#f97316',
-  ANOMALY_DETECTED: '#8b5cf6',
-  RISK_CALCULATED: '#eab308',
-  RECOVERY_STARTED: '#38bdf8',
-  RECOVERY_COMPLETED: '#22c55e',
-  RECOVERY_VERIFIED: '#22c55e',
-  RECOVERY_FAILED: '#ef4444',
-  INCIDENT_RESOLVED: '#22c55e',
-  HUMAN_APPROVAL: '#22c55e',
-  HUMAN_REJECTION: '#ef4444',
+  ACTION_BLOCKED: '#dc2626', AGENT_PAUSED: '#dc2626', INCIDENT_CREATED: '#dc2626', POLICY_VIOLATION: '#ea580c',
+  SEQUENCE_PATTERN_DETECTED: '#ea580c', PRIVILEGE_ESCALATION_DETECTED: '#ea580c', INJECTION_INDICATOR_DETECTED: '#7c3aed',
+  ANOMALY_DETECTED: '#7c3aed', RISK_CALCULATED: '#ca8a04', DRIFT_DETECTED: '#ca8a04', RECOVERY_STARTED: '#0284c7',
+  RECOVERY_STEP: '#0284c7', RECOVERY_VERIFIED: '#16a34a', INCIDENT_RESOLVED: '#16a34a', RECOVERY_PARTIAL: '#ca8a04',
+  RECOVERY_FAILED: '#dc2626', HUMAN_APPROVAL: '#16a34a', HUMAN_REJECTION: '#dc2626',
 }
 
 export default function IncidentDetail() {
   const { id = '' } = useParams()
   const { data, error, loading, reload } = useApi(() => api.incident(id), [id])
+  const graph = useApi(() => (data ? api.sessionGraph(data.session_id) : Promise.resolve(null)), [data?.session_id])
+  const replay = useApi(() => api.replay(id), [id, data?.status])
   const [busy, setBusy] = useState(false)
+  const [result, setResult] = useState<RecoveryResult | null>(null)
   const [msg, setMsg] = useState<string | null>(null)
+  const [showRaw, setShowRaw] = useState(false)
 
-  // Audit replay: step through the timeline like a recording.
-  const [replayIdx, setReplayIdx] = useState<number | null>(null)
-
-  useEventListener(['recovery'], (e) => {
-    if (e.data?.incident_id === id) reload()
-  })
-
-  useEffect(() => {
-    if (replayIdx === null || !data) return
-    if (replayIdx >= data.timeline.length) {
-      setReplayIdx(null)
-      return
-    }
-    const t = setTimeout(() => setReplayIdx((i) => (i === null ? null : i + 1)), 600)
-    return () => clearTimeout(t)
-  }, [replayIdx, data])
+  useEventListener(['recovery'], (e) => { if (e.data?.incident_id === id) reload() })
+  useEffect(() => setResult(null), [id])
 
   const recover = async () => {
-    setBusy(true)
-    setMsg(null)
+    setBusy(true); setMsg(null)
     try {
-      const res = await api.recover(id)
-      setMsg(
-        res.verified
-          ? 'Recovery completed and verified: every simulated resource matches its baseline.'
-          : `Recovery ran but verification FAILED — ${res.verification.summary}`,
-      )
+      const r = await api.recover(id)
+      setResult(r)
       reload()
     } catch (e) {
       setMsg(e instanceof ApiError ? e.message : 'Recovery could not be started.')
-    } finally {
-      setBusy(false)
-    }
+    } finally { setBusy(false) }
   }
 
   if (loading && !data) return <Loading label="Loading incident…" />
@@ -82,21 +49,21 @@ export default function IncidentDetail() {
   if (!data) return null
 
   const color = RISK_COLOR[data.severity as RiskLevel] ?? '#64748b'
-  const factors = (data.risk_factors as any)?.factors ?? {}
-  const contributions = (data.risk_factors as any)?.weighted_contributions ?? {}
-  const violations: string[] = (data.risk_factors as any)?.policy_violations ?? []
-  const violationDetails: Record<string, string> = (data.risk_factors as any)?.policy_details ?? {}
-  const features: Record<string, number> = (data.risk_factors as any)?.features ?? {}
-  const done = data.status === 'RESOLVED' || data.status === 'RECOVERED'
-  const visibleTimeline =
-    replayIdx === null ? data.timeline : data.timeline.slice(0, Math.max(1, replayIdx))
-  const verifyEvent = data.recovery_events.find((e) => e.recovery_action === 'STATE_VERIFICATION')
+  const rf = data.risk_factors as Analysis
+  const has = Boolean(rf?.factors)
+  const done = data.status === 'RESOLVED'
+
+  // recovery steps: prefer the fresh result, else reconstruct from stored events
+  const stored: RecoveryStep[] = data.recovery_events
+    .filter((r) => ['PAUSE_AGENT', 'REVERT_PERMISSIONS', 'RESTORE_RESOURCES', 'INTEGRITY_VERIFICATION'].includes(r.recovery_action))
+    .map((r) => ({ step: r.recovery_action, status: r.recovery_status as RecoveryStep['status'], detail: r.detail }))
+  // keep the most recent attempt (last four steps)
+  const latestSteps = result?.steps ?? stored.slice(-4)
+  const outcome = result?.outcome ?? (data.status === 'RESOLVED' ? 'SUCCESS' : data.status === 'RECOVERY_PARTIAL' ? 'PARTIAL' : data.status === 'RECOVERY_FAILED' ? 'FAILED' : undefined)
 
   return (
     <div className="space-y-5">
-      <Link to="/app/incidents" className="inline-flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-300">
-        <ArrowLeft size={14} /> Back to Incident Center
-      </Link>
+      <Link to="/app/incidents" className="inline-flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-300"><ArrowLeft size={14} /> Back to Incident Center</Link>
 
       <div className="card card-pad" style={{ borderTop: `2px solid ${color}` }}>
         <div className="flex flex-wrap items-start justify-between gap-4">
@@ -104,15 +71,9 @@ export default function IncidentDetail() {
             <p className="font-mono text-xs text-slate-500">{data.reference}</p>
             <h1 className="mt-1 text-xl font-bold tracking-tight text-white">{data.title}</h1>
             <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-              <span
-                className="chip ring-1 ring-inset"
-                style={{ color, backgroundColor: `${color}18`, borderColor: `${color}40` }}
-              >
-                <Siren size={11} /> {data.severity}
-              </span>
-              <span className="chip bg-white/[0.05] text-slate-300 ring-1 ring-inset ring-white/10">
-                {data.status.replace(/_/g, ' ')}
-              </span>
+              <span className="chip ring-1 ring-inset" style={{ color, backgroundColor: `${color}18`, borderColor: `${color}40` }}><Siren size={11} /> {data.severity}</span>
+              <span className="chip bg-white/[0.05] text-slate-300 ring-1 ring-inset ring-white/10">{data.status.replace(/_/g, ' ')}</span>
+              <span className="chip bg-white/[0.05] text-slate-400 ring-1 ring-inset ring-white/10">{data.kind}</span>
               <span className="text-slate-500">{data.agent_name}</span>
               <span className="text-slate-600">{fmtDateTime(data.created_at)}</span>
             </div>
@@ -121,141 +82,80 @@ export default function IncidentDetail() {
             <RiskMeter score={data.risk_score} level={data.severity as RiskLevel} size={104} />
             <button className="btn-safe" onClick={recover} disabled={busy || done}>
               {busy ? <Loader2 size={14} className="animate-spin" /> : <RotateCcw size={14} />}
-              {done ? 'Recovered' : 'Start recovery'}
+              {done ? 'Recovered' : data.recovery_attempts ? 'Retry recovery' : 'Start recovery'}
             </button>
           </div>
         </div>
-        {msg && (
-          <p className="mt-3 rounded-lg border border-white/10 bg-ink-850 px-3 py-2 text-sm text-slate-300">
-            {msg}
-          </p>
-        )}
+        {msg && <p className="mt-3 rounded-lg border border-white/10 bg-ink-850 px-3 py-2 text-sm text-slate-300">{msg}</p>}
       </div>
 
+      <Card title="Incident replay" subtitle="Scrub through what happened, as recorded in the audit trail" icon={<PlayCircle size={14} className="text-beam" />}>
+        {replay.loading && !replay.data ? <Loading label="Building replay…" /> : replay.data ? <ReplayPlayer replay={replay.data} /> : null}
+      </Card>
+
       <div className="grid gap-4 lg:grid-cols-2">
-        <Card
-          title="Why the system intervened"
-          subtitle="Generated from the factors that actually fired"
-          icon={<BrainCircuit size={14} className="text-ai" />}
-        >
+        <Card title="Why the system intervened" subtitle="Generated from the signals that actually fired" icon={<BrainCircuit size={14} className="text-ai" />}>
           <p className="text-sm leading-relaxed text-slate-300">{data.ai_explanation}</p>
-          {violations.length > 0 && (
-            <>
-              <p className="label mt-4">Policy violations</p>
+          {has && rf.matched_rules?.length > 0 && <div className="mt-4"><p className="label mb-1.5">Policy rules that fired</p><MatchedRules rules={rf.matched_rules} /></div>}
+          {has && rf.policy_violations.length > 0 && (
+            <div className="mt-4">
+              <p className="label">Policy violations</p>
               <ul className="mt-1.5 space-y-1.5">
-                {violations.map((v) => (
-                  <li key={v} className="text-xs">
-                    <span className="chip bg-crit/12 text-crit ring-1 ring-inset ring-crit/25">
-                      {v.replace(/_/g, ' ')}
-                    </span>
-                    <span className="ml-2 text-slate-400">{violationDetails[v]}</span>
-                  </li>
+                {rf.policy_violations.map((v) => (
+                  <li key={v} className="text-xs"><span className="chip bg-crit/12 text-crit ring-1 ring-inset ring-crit/25">{v.replace(/_/g, ' ')}</span><span className="ml-2 text-slate-400">{rf.policy_details[v]}</span></li>
                 ))}
               </ul>
-            </>
+            </div>
           )}
         </Card>
-
         <Card title="Risk factor breakdown" subtitle="How the 0–100 score was composed">
-          {Object.keys(factors).length === 0 ? (
-            <p className="py-6 text-center text-sm text-slate-600">
-              No risk factors recorded for this incident.
-            </p>
-          ) : (
-            <>
-              <div className="space-y-2.5">
-                {Object.entries(factors).map(([k, v]) => (
-                  <div key={k}>
-                    <div className="flex items-baseline justify-between gap-2 text-xs">
-                      <span className="text-slate-400">{FACTOR_LABEL[k] ?? k}</span>
-                      <span className="font-mono tabular-nums text-slate-300">
-                        {Math.round(v as number)}
-                        <span className="ml-2 text-[10px] text-slate-600">
-                          → {(contributions[k] ?? 0).toFixed(1)} pts
-                        </span>
-                      </span>
-                    </div>
-                    <div className="mt-1">
-                      <Bar
-                        value={v as number}
-                        color={(v as number) >= 80 ? '#ef4444' : (v as number) >= 50 ? '#f97316' : '#38bdf8'}
-                      />
-                    </div>
-                  </div>
-                ))}
-              </div>
-              {contributions.policy_violations !== undefined && (
-                <p className="mt-3 text-[11px] text-slate-500">
-                  Policy-violation penalty added {contributions.policy_violations} points on top of
-                  the weighted behavioural score.
-                </p>
-              )}
-              <p className="mt-2 text-[11px] text-slate-600">
-                Behavioural features fed to the model:{' '}
-                {Object.entries(features)
-                  .filter(([, v]) => v > 0)
-                  .slice(0, 6)
-                  .map(([k, v]) => `${k}=${v}`)
-                  .join(', ')}
-              </p>
-            </>
-          )}
+          {has ? <FactorBars a={rf} /> : <p className="py-6 text-center text-sm text-slate-600">No risk factors recorded.</p>}
         </Card>
       </div>
 
-      <Card
-        title="Behavioural sequence"
-        subtitle="Where the agent left its learned profile"
-      >
-        <SequenceDeviation planned={[]} actual={data.actions} />
+      {has && (
+        <div className="grid gap-4 lg:grid-cols-2">
+          <Card title="Counterfactual: ALLOW vs BLOCK" subtitle="Simulated on a copy of the sandbox">
+            <CounterfactualPanel cf={rf.counterfactual} />
+          </Card>
+          <Card title="Zero-trust evaluation" subtitle="Six questions asked of every action">
+            <ZeroTrustPanel items={rf.zero_trust} />
+          </Card>
+        </div>
+      )}
+
+      <Card title="Behavioural sequence" subtitle="Where the agent left its learned profile">
+        <SequenceDeviation actual={data.actions} prevented={data.prevented_steps} />
       </Card>
 
-      <Card
-        title="Action sequence"
-        subtitle="Every action in the session, with the model output that drove the decision"
-      >
-        <ul className="space-y-2">
-          {data.actions.map((a) => (
-            <ActionRow key={a.id} action={a} defaultOpen={a.id === data.trigger_action_id} />
-          ))}
-        </ul>
-      </Card>
+      {graph.data && (
+        <Card title="Behaviour graph" subtitle="Suspicious path highlighted in red">
+          <BehaviorGraph data={graph.data} />
+        </Card>
+      )}
 
       <div className="grid gap-4 lg:grid-cols-2">
-        <Card
-          title="Incident timeline"
-          subtitle="Every recorded event, in order"
-          action={
-            <button
-              className="btn-ghost !px-3 !py-1.5 text-xs"
-              onClick={() => setReplayIdx(replayIdx === null ? 1 : null)}
-            >
-              {replayIdx === null ? <PlayCircle size={13} /> : <SkipForward size={13} />}
-              {replayIdx === null ? 'Replay' : 'Show all'}
-            </button>
-          }
-        >
-          <ol className="relative space-y-3 border-l border-white/[0.08] pl-5">
-            {visibleTimeline.map((e) => {
+        <Card title="Recovery & verification" subtitle={data.recovery_attempts ? `${data.recovery_attempts} attempt(s)` : 'Not yet attempted'}>
+          {latestSteps.length === 0 ? (
+            <p className="py-6 text-center text-sm text-slate-600">Recovery has not been run for this incident.</p>
+          ) : (
+            <RecoveryChecklist steps={latestSteps} outcome={outcome} verification={result?.verification}
+                               residual={result?.residual_risk} attempt={result?.attempt ?? data.recovery_attempts}
+                               onRetry={recover} retrying={busy} />
+          )}
+        </Card>
+
+        <Card title="Incident timeline" subtitle="Every recorded event, in order">
+          <ol className="relative max-h-[420px] space-y-3 overflow-y-auto border-l border-white/[0.08] pl-5">
+            {data.timeline.map((e) => {
               const c = EVENT_COLOR[e.event_type] ?? '#475569'
               return (
-                <li key={e.id} className="animate-fade-up relative">
-                  <span
-                    className="absolute -left-[26px] top-1 h-2.5 w-2.5 rounded-full ring-4 ring-ink-900"
-                    style={{ backgroundColor: c }}
-                  />
+                <li key={e.id} className="relative">
+                  <span className="absolute -left-[26px] top-1 h-2.5 w-2.5 rounded-full ring-4 ring-ink-900" style={{ backgroundColor: c }} />
                   <div className="flex flex-wrap items-baseline gap-2">
-                    <span className="font-mono text-[11px] text-slate-600">
-                      {fmtTime(e.timestamp)}
-                    </span>
-                    <span className="text-xs font-semibold" style={{ color: c }}>
-                      {e.event_type.replace(/_/g, ' ')}
-                    </span>
-                    {e.risk_score !== null && (
-                      <span className="font-mono text-[10px] text-slate-600">
-                        risk {Math.round(e.risk_score)}
-                      </span>
-                    )}
+                    <span className="font-mono text-[11px] text-slate-600">{fmtTime(e.timestamp)}</span>
+                    <span className="text-xs font-semibold" style={{ color: c }}>{e.event_type.replace(/_/g, ' ')}</span>
+                    {e.risk_score !== null && <span className="font-mono text-[10px] text-slate-600">risk {Math.round(e.risk_score)}</span>}
                   </div>
                   <p className="mt-0.5 text-xs leading-relaxed text-slate-400">{e.reason}</p>
                 </li>
@@ -263,85 +163,13 @@ export default function IncidentDetail() {
             })}
           </ol>
         </Card>
-
-        <Card title="Recovery & verification" subtitle="Rollback of the simulated environment">
-          {data.recovery_events.length === 0 ? (
-            <p className="py-8 text-center text-sm text-slate-600">
-              Recovery has not been run for this incident.
-            </p>
-          ) : (
-            <div className="space-y-3">
-              {verifyEvent && (
-                <VerifyBadge verified={verifyEvent.recovery_status === 'VERIFIED'} />
-              )}
-              <ol className="space-y-3">
-                {data.recovery_events.map((r) => (
-                  <li key={r.id} className="rounded-lg border border-white/[0.06] bg-ink-850/60 p-3">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <span className="font-mono text-xs font-semibold text-slate-200">
-                        {r.recovery_action.replace(/_/g, ' ')}
-                      </span>
-                      <span
-                        className={`chip ${
-                          r.recovery_status === 'VERIFIED' || r.recovery_status === 'COMPLETED'
-                            ? 'bg-safe/12 text-safe ring-1 ring-inset ring-safe/25'
-                            : r.recovery_status === 'VERIFICATION_FAILED' || r.recovery_status === 'FAILED'
-                              ? 'bg-crit/12 text-crit ring-1 ring-inset ring-crit/25'
-                              : 'bg-white/5 text-slate-400 ring-1 ring-inset ring-white/10'
-                        }`}
-                      >
-                        {r.recovery_status}
-                      </span>
-                    </div>
-                    <p className="mt-1.5 text-xs leading-relaxed text-slate-400">{r.detail}</p>
-                    <p className="mt-1 font-mono text-[10px] text-slate-600">
-                      {fmtDateTime(r.timestamp)}
-                    </p>
-                  </li>
-                ))}
-              </ol>
-            </div>
-          )}
-        </Card>
       </div>
 
-      <Card title="Interventions" subtitle="Enforcement decisions taken during this session">
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[560px]">
-            <thead>
-              <tr className="border-b border-white/[0.06]">
-                <th className="th">Time</th>
-                <th className="th">Decision</th>
-                <th className="th">Agent state after</th>
-                <th className="th">Reason</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.interventions.map((v) => (
-                <tr key={v.id} className="border-b border-white/[0.04]">
-                  <td className="td font-mono text-xs text-slate-500">{fmtTime(v.created_at)}</td>
-                  <td className="td">
-                    <span
-                      className={`chip ${
-                        v.decision.startsWith('BLOCK')
-                          ? 'bg-crit/12 text-crit ring-1 ring-inset ring-crit/25'
-                          : v.decision === 'REQUIRE_APPROVAL'
-                            ? 'bg-ai/12 text-ai ring-1 ring-inset ring-ai/25'
-                            : v.decision === 'MONITOR'
-                              ? 'bg-warn/12 text-warn ring-1 ring-inset ring-warn/25'
-                              : 'bg-safe/12 text-safe ring-1 ring-inset ring-safe/25'
-                      }`}
-                    >
-                      {v.decision.replace(/_/g, ' ')}
-                    </span>
-                  </td>
-                  <td className="td text-xs">{v.agent_state_after}</td>
-                  <td className="td line-clamp-2 max-w-lg text-xs text-slate-500">{v.reason}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+      <Card title="Action sequence" subtitle="Every action in the session, with the model output behind each decision"
+            action={<button className="text-xs text-slate-500 hover:text-slate-300" onClick={() => setShowRaw((s) => !s)}>{showRaw ? 'Collapse all' : 'Expand trigger action'}</button>}>
+        <ul className="space-y-2">
+          {data.actions.map((a) => <ActionRow key={a.id} action={a} defaultOpen={showRaw ? a.id === data.trigger_action_id : false} />)}
+        </ul>
       </Card>
     </div>
   )

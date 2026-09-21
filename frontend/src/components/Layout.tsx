@@ -1,18 +1,22 @@
 import {
-  Activity, BrainCircuit, FlaskConical, Gauge, LayoutDashboard, ScrollText,
-  ShieldCheck, Siren, UserCheck, Wifi, WifiOff,
+  Activity, BarChart3, FlaskConical, Gauge, LayoutDashboard, Network, PlayCircle, ScrollText,
+  LogOut, ShieldCheck, Siren, Sparkles, UserCheck, Wifi, WifiOff,
 } from 'lucide-react'
 import { NavLink, Outlet } from 'react-router-dom'
+import { useAuth } from '../hooks/useAuth'
 import { useEvents } from '../hooks/useEvents'
 
 const NAV = [
+  { to: '/app/judge', label: 'Judge Mode', icon: Sparkles, accent: true },
   { to: '/app', end: true, label: 'Dashboard', icon: LayoutDashboard },
-  { to: '/app/lab', label: 'Simulation Lab', icon: FlaskConical, accent: true },
+  { to: '/app/lab', label: 'Simulation Lab', icon: FlaskConical },
   { to: '/app/monitor', label: 'Agent Monitor', icon: Activity },
   { to: '/app/incidents', label: 'Incident Center', icon: Siren },
+  { to: '/app/replay', label: 'Incident Replay', icon: PlayCircle },
   { to: '/app/approvals', label: 'Human Approval', icon: UserCheck },
   { to: '/app/audit', label: 'Audit Trail', icon: ScrollText },
-  { to: '/app/model', label: 'Model Evaluation', icon: BrainCircuit },
+  { to: '/app/evaluation', label: 'Evaluation', icon: BarChart3 },
+  { to: '/app/architecture', label: 'Architecture', icon: Network },
 ]
 
 function ConnectionPill() {
@@ -31,6 +35,7 @@ function ConnectionPill() {
 }
 
 export default function Layout() {
+  const { user, role, config, logout } = useAuth()
   return (
     <div className="flex min-h-screen">
       <aside className="sticky top-0 hidden h-screen w-60 shrink-0 flex-col border-r border-white/[0.06] bg-ink-900/60 backdrop-blur lg:flex">
@@ -66,7 +71,7 @@ export default function Layout() {
               {label}
               {accent && (
                 <span className="ml-auto rounded bg-ai/20 px-1.5 py-0.5 text-[9px] font-bold uppercase text-ai">
-                  Demo
+                  Start here
                 </span>
               )}
             </NavLink>
@@ -92,6 +97,15 @@ export default function Layout() {
           </NavLink>
           <div className="ml-auto flex items-center gap-2">
             <ConnectionPill />
+            {config?.enabled && user && (
+              <>
+                <span className="hidden items-center gap-2 rounded-lg border border-white/[0.09] bg-ink-850 px-2.5 py-1 text-xs sm:flex">
+                  <span className="font-semibold text-slate-200">{user}</span>
+                  <span className={`chip !px-1.5 !py-0 ring-1 ring-inset ${role === 'viewer' ? 'bg-warn/10 text-warn ring-warn/25' : 'bg-safe/10 text-safe ring-safe/25'}`}>{role}</span>
+                </span>
+                <button className="btn-ghost !px-2.5 !py-1.5 text-xs" onClick={logout} title="Sign out"><LogOut size={14} /> Sign out</button>
+              </>
+            )}
           </div>
         </header>
 
@@ -113,6 +127,11 @@ export default function Layout() {
           ))}
         </nav>
 
+        {role === 'viewer' && (
+          <p className="border-b border-warn/25 bg-warn/[0.07] px-4 py-2 text-center text-xs text-warn">
+            You are signed in read-only (viewer). Sign in as an operator to start runs, decide approvals or trigger recovery.
+          </p>
+        )}
         <main className="flex-1 px-4 py-5 sm:px-6 sm:py-6">
           <Outlet />
         </main>

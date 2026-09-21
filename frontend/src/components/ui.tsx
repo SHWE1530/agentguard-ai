@@ -3,15 +3,15 @@ import {
   ShieldCheck, ShieldX, XCircle,
 } from 'lucide-react'
 import type { ReactNode } from 'react'
-import type { RiskLevel } from '../types'
+import type { Decision, RiskLevel } from '../types'
 
 /* ------------------------------------------------------------------ colors */
 
 export const RISK_COLOR: Record<RiskLevel, string> = {
-  LOW: '#22c55e',
-  MEDIUM: '#eab308',
-  HIGH: '#f97316',
-  CRITICAL: '#ef4444',
+  LOW: '#16a34a',
+  MEDIUM: '#ca8a04',
+  HIGH: '#ea580c',
+  CRITICAL: '#dc2626',
 }
 
 const RISK_CLASS: Record<RiskLevel, string> = {
@@ -29,6 +29,7 @@ const STATUS_CLASS: Record<string, string> = {
   REJECTED: 'bg-crit/15 text-crit ring-1 ring-inset ring-crit/35',
   PENDING_APPROVAL: 'bg-ai/15 text-ai ring-1 ring-inset ring-ai/30',
   PENDING: 'bg-ai/15 text-ai ring-1 ring-inset ring-ai/30',
+  BYPASSED: 'bg-warn/15 text-warn ring-1 ring-inset ring-warn/40',
 }
 
 export const AGENT_STATUS_CLASS: Record<string, string> = {
@@ -204,7 +205,7 @@ export function RiskMeter({ score, level, size = 132 }: { score: number; level: 
   return (
     <div className="relative" style={{ width: size, height: size }}>
       <svg width={size} height={size} className="-rotate-90">
-        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="#1d263c" strokeWidth={10} />
+        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="#e2e8f0" strokeWidth={10} />
         <circle
           cx={size / 2}
           cy={size / 2}
@@ -231,7 +232,7 @@ export function RiskMeter({ score, level, size = 132 }: { score: number; level: 
 }
 
 /** Horizontal bar used for anomaly scores and risk factor breakdowns. */
-export function Bar({ value, max = 100, color = '#38bdf8' }: { value: number; max?: number; color?: string }) {
+export function Bar({ value, max = 100, color = '#0284c7' }: { value: number; max?: number; color?: string }) {
   const pct = Math.max(0, Math.min(100, (value / max) * 100))
   return (
     <div className="h-1.5 w-full overflow-hidden rounded-full bg-ink-700">
@@ -244,7 +245,7 @@ export function Bar({ value, max = 100, color = '#38bdf8' }: { value: number; ma
 }
 
 export function AnomalyPill({ score }: { score: number }) {
-  const color = score >= 0.75 ? '#ef4444' : score >= 0.4 ? '#eab308' : '#22c55e'
+  const color = score >= 0.75 ? '#dc2626' : score >= 0.4 ? '#ca8a04' : '#16a34a'
   return (
     <span className="inline-flex items-center gap-2">
       <span className="font-mono text-xs tabular-nums" style={{ color }}>
@@ -267,4 +268,58 @@ export const fmtDateTime = (iso: string) => {
   return d.toLocaleString([], {
     month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit',
   })
+}
+
+
+/* ---------------------------------------------------------------- decisions */
+
+const DECISION_CLASS: Record<Decision, string> = {
+  ALLOW: 'bg-safe/12 text-safe ring-safe/25',
+  MONITOR: 'bg-warn/12 text-warn ring-warn/25',
+  REQUIRE_APPROVAL: 'bg-ai/12 text-ai ring-ai/25',
+  BLOCK: 'bg-high/12 text-high ring-high/30',
+  TERMINATE: 'bg-crit/15 text-crit ring-crit/35',
+}
+
+export function DecisionBadge({ decision }: { decision: Decision }) {
+  return (
+    <span className={`chip ring-1 ring-inset ${DECISION_CLASS[decision] ?? ''}`}>
+      {decision.replace(/_/g, ' ')}
+    </span>
+  )
+}
+
+export const TRUST_COLOR = (score: number) =>
+  score >= 80 ? '#16a34a' : score >= 60 ? '#ca8a04' : score >= 40 ? '#ea580c' : '#dc2626'
+
+/** Agent trust score ring, 0-100. */
+export function TrustRing({ score, band, size = 84 }: { score: number; band?: string; size?: number }) {
+  const r = size / 2 - 7
+  const c = 2 * Math.PI * r
+  const color = TRUST_COLOR(score)
+  return (
+    <div className="relative shrink-0" style={{ width: size, height: size }} title={band}>
+      <svg width={size} height={size} className="-rotate-90">
+        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="#e2e8f0" strokeWidth={7} />
+        <circle
+          cx={size / 2} cy={size / 2} r={r} fill="none" stroke={color} strokeWidth={7} strokeLinecap="round"
+          strokeDasharray={c} strokeDashoffset={c * (1 - score / 100)}
+          style={{ transition: 'stroke-dashoffset 700ms cubic-bezier(.22,1,.36,1), stroke 400ms' }}
+        />
+      </svg>
+      <div className="absolute inset-0 flex flex-col items-center justify-center">
+        <span className="font-mono text-lg font-bold tabular-nums" style={{ color }}>{Math.round(score)}</span>
+        <span className="text-[8px] font-semibold uppercase tracking-wider text-slate-500">trust</span>
+      </div>
+    </div>
+  )
+}
+
+export function Section({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div>
+      <p className="label">{label}</p>
+      <div className="mt-1.5">{children}</div>
+    </div>
+  )
 }

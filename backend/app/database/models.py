@@ -36,6 +36,11 @@ class Session_(Base):
     status: Mapped[str] = mapped_column(String, default="RUNNING")
     started_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    tainted: Mapped[bool] = mapped_column(Boolean, default=False)
+    taint_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    plan_json: Mapped[str] = mapped_column(Text, default="[]")     # remaining scenario steps
+    cursor: Mapped[int] = mapped_column(Integer, default=0)         # next step to execute
+    fault: Mapped[str | None] = mapped_column(String, nullable=True)  # recovery fault injection
     task: Mapped["Task"] = relationship(back_populates="session", uselist=False)
 
 
@@ -63,6 +68,9 @@ class Action(Base):
     task_relevance: Mapped[float] = mapped_column(Float)
     # ALLOWED | MONITORED | BLOCKED | PENDING_APPROVAL | APPROVED | REJECTED
     action_status: Mapped[str] = mapped_column(String)
+    decision: Mapped[str] = mapped_column(String, default="ALLOW")
+    interval_s: Mapped[float] = mapped_column(Float, default=3.0)
+    execution_result: Mapped[str] = mapped_column(String, default="NOT_EXECUTED")  # SUCCESS|FAILED|NOT_EXECUTED
     anomaly_score: Mapped[float] = mapped_column(Float)
     risk_score: Mapped[float] = mapped_column(Float)
     risk_level: Mapped[str] = mapped_column(String, index=True)
@@ -82,9 +90,11 @@ class Incident(Base):
     title: Mapped[str] = mapped_column(String)
     reason: Mapped[str] = mapped_column(Text)
     risk_score: Mapped[float] = mapped_column(Float)
-    # OPEN | RECOVERING | RECOVERED | RECOVERY_FAILED | RESOLVED
+    # OPEN | RECOVERING | RESOLVED | RECOVERY_PARTIAL | RECOVERY_FAILED
     status: Mapped[str] = mapped_column(String, default="OPEN")
     trigger_action_id: Mapped[str] = mapped_column(String)
+    kind: Mapped[str] = mapped_column(String, default="MISBEHAVIOR")  # MISBEHAVIOR | DRIFT
+    recovery_attempts: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
@@ -122,6 +132,11 @@ class Approval(Base):
     risk_score: Mapped[float] = mapped_column(Float)
     reason: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String, default="PENDING")  # PENDING | APPROVED | REJECTED
+    evidence_json: Mapped[str] = mapped_column(Text, default="{}")
+    impact_json: Mapped[str] = mapped_column(Text, default="{}")
+    alternative_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    evidence_rounds: Mapped[int] = mapped_column(Integer, default=0)
+    decision_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     decided_by: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -165,5 +180,48 @@ class SimulatedResource(Base):
     # HEALTHY | DEGRADED | DELETED | ESCALATED | EXFILTRATED | DISABLED
     state: Mapped[str] = mapped_column(String)
     healthy_state: Mapped[str] = mapped_column(String)  # known-good baseline
+    checksum: Mapped[str] = mapped_column(String, default="")
+    healthy_checksum: Mapped[str] = mapped_column(String, default="")
+    content_version: Mapped[int] = mapped_column(Integer, default=0)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     compromised: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class AgentBaseline(Base):
+    """Versioned behavioural fingerprint. Only one version per agent is active."""
+
+    __tablename__ = "agent_baselines"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    agent_id: Mapped[str] = mapped_column(String, index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    source: Mapped[str] = mapped_column(String)         # bootstrap | adaptive
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    data_json: Mapped[str] = mapped_column(Text)
+    anchor_divergence: Mapped[float] = mapped_column(Float, default=0.0)
+    note: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class TrustSnapshot(Base):
+    __tablename__ = "trust_snapshots"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    agent_id: Mapped[str] = mapped_column(String, index=True)
+    session_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    score: Mapped[float] = mapped_column(Float)
+    event: Mapped[str] = mapped_column(String)
+    components_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class DriftSnapshot(Base):
+    """Per-session behavioural drift versus the agent's fingerprint."""
+
+    __tablename__ = "drift_snapshots"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    agent_id: Mapped[str] = mapped_column(String, index=True)
+    session_id: Mapped[str] = mapped_column(String, index=True)
+    peak: Mapped[float] = mapped_column(Float)
+    final: Mapped[float] = mapped_column(Float)
+    threshold: Mapped[float] = mapped_column(Float)
+    reference_mean: Mapped[float] = mapped_column(Float)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

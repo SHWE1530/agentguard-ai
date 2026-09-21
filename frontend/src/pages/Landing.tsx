@@ -5,31 +5,31 @@ import {
 import { Link } from 'react-router-dom'
 
 const FLOW = [
-  { label: 'Observe', icon: Eye, color: '#38bdf8' },
-  { label: 'Detect', icon: BrainCircuit, color: '#8b5cf6' },
-  { label: 'Assess', icon: Gauge, color: '#eab308' },
-  { label: 'Intervene', icon: Siren, color: '#f97316' },
-  { label: 'Recover', icon: RotateCcw, color: '#22c55e' },
-  { label: 'Verify', icon: ShieldCheck, color: '#22c55e' },
+  { label: 'Observe', icon: Eye, color: '#0284c7' },
+  { label: 'Detect', icon: BrainCircuit, color: '#7c3aed' },
+  { label: 'Assess', icon: Gauge, color: '#ca8a04' },
+  { label: 'Intervene', icon: Siren, color: '#ea580c' },
+  { label: 'Recover', icon: RotateCcw, color: '#16a34a' },
+  { label: 'Verify', icon: ShieldCheck, color: '#16a34a' },
 ]
 
 const BENEFITS = [
   {
     icon: BrainCircuit,
-    title: 'Behavioural Detection',
-    body: 'An Isolation Forest trained only on sanctioned agent behaviour scores every action for deviation, and reports a calibrated 0–1 anomaly value rather than a yes/no verdict.',
+    title: 'Behavioural fingerprint, not just rules',
+    body: 'Each agent gets a learned fingerprint (sequences, tools, resources, timing). An Isolation Forest scores every action against it, kill-chain and privilege-escalation detectors read the whole sequence, and drift shows when behaviour slowly moves away.',
     color: 'text-ai',
   },
   {
     icon: Gauge,
-    title: 'Risk-Aware Intervention',
-    body: 'Risk fuses the model signal with resource sensitivity, privilege, task relevance and blast radius. Policy decides: allow, monitor, hold for a human, or block and stop the agent.',
+    title: 'Intent-aware, explainable enforcement',
+    body: 'Actions are scored against the assigned task, not just a deny-list. Eight risk signals are fused, configurable policy rules decide ALLOW to TERMINATE, and every decision shows what would have happened if it were allowed.',
     color: 'text-high',
   },
   {
     icon: RotateCcw,
-    title: 'Automated Recovery',
-    body: 'When something slips through, the sandboxed environment is rolled back to its known-good baseline and then re-inspected. "Verified" is only reported when every check truly passes.',
+    title: 'Verified recovery, honest evaluation',
+    body: 'Recovery is a step-by-step procedure that verifies state and integrity, and can fail or partly fail. The evaluation runs four detector configurations on held-out sessions and reports where each one breaks.',
     color: 'text-safe',
   },
 ]
@@ -71,8 +71,11 @@ export default function Landing() {
           </p>
 
           <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
-            <Link to="/app/lab" className="btn-primary px-6 py-2.5">
-              Launch Simulation <ArrowRight size={15} />
+            <Link to="/app/judge" className="btn-primary px-6 py-2.5">
+              Start Judge Mode <ArrowRight size={15} />
+            </Link>
+            <Link to="/app/lab" className="btn-ghost px-6 py-2.5">
+              Launch Simulation
             </Link>
             <a href="#architecture" className="btn-ghost px-6 py-2.5">
               View Architecture
@@ -143,8 +146,8 @@ export default function Landing() {
   │                                                │                 │
   │        ┌───────────────────────────────────────┤                 │
   │        ▼                                       ▼                 │
-  │  Feature Extractor                       Policy Engine           │
-  │  (16 behavioural features)               (agent_policy.json)     │
+  │  Fingerprint · Intent · Sequence          Policy Engine           │
+  │  (24 behavioural features)               (agent_policy.json)     │
   │        ▼                                       │                 │
   │  Isolation Forest ──► anomaly 0–1 ─────────────┤                 │
   │                                                ▼                 │
@@ -198,7 +201,8 @@ export default function Landing() {
               </p>
               <p className="mt-3 text-xs text-slate-600">
                 The behavioural dataset is synthetic and generated locally; it is labelled as
-                such throughout the application and is not real-world telemetry.
+                such throughout the application and is not real-world telemetry. Agents are
+                scripted simulators, not live LLMs.
               </p>
             </div>
           </div>

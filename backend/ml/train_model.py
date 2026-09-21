@@ -1,24 +1,20 @@
-"""Train the Isolation Forest behavioural anomaly detector.
+"""Train the Isolation Forest behavioural detector and per-agent fingerprints.
 
-The model is trained on NORMAL (sanctioned) behaviour only -- this is
-one-class / novelty detection, which is the realistic framing: we know what
-good agent behaviour looks like, we cannot enumerate every way an agent can
-go wrong.
+One-class / novelty detection: the forest is fitted on NORMAL sessions only and
+never sees a label. Fingerprints (bigram/trigram/tool/resource/timing profiles)
+are learned from the same normal sessions.
 
-Score normalisation
--------------------
-Isolation Forest's `score_samples` returns an unbounded value where HIGHER
-means MORE normal. We map it to a 0..1 anomaly score with a logistic curve:
+Leakage control: training features are computed with CROSS-FITTED fingerprints
+(a session is featurised with a fingerprint learned from the OTHER half), so a
+session's own transitions never make it look artificially familiar.
 
-    anomaly = 1 / (1 + exp((raw - t) / s))
-
-  t = 5th percentile of the raw scores of the NORMAL training data, so ~95%
-      of normal behaviour lands below 0.5.
-  s = std-dev of the normal raw scores / 4, which controls how sharply the
-      curve saturates. Both constants are stored with the model so runtime
-      scoring is identical to training.
+Score calibration: raw forest scores are unbounded (higher = more normal). They
+are mapped to 0..1 with  anomaly = 1 / (1 + exp((raw - t) / s))  where t is the
+5th percentile of normal-training raw scores and s = std / 4. Both are stored in
+the artifact so runtime scoring equals training-time scoring.
 
 Usage:
+    python -m backend.ml.generate_dataset
     python -m backend.ml.train_model
 """
 from __future__ import annotations
@@ -26,116 +22,76 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from typing import Dict
+import time
+from typing import Dict, List
 
 import joblib
 import numpy as np
-import pandas as pd
 from sklearn.ensemble import IsolationForest
-from sklearn.model_selection import train_test_split
 
+from backend.app.agent.profiles import AGENTS
 from backend.ml.features import FEATURE_NAMES
+from backend.ml.generate_dataset import OUT_PATH, load
+from backend.ml.replay import fit_fingerprint, session_features
 
 HERE = os.path.dirname(__file__)
-DATA_CSV = os.path.join(HERE, "data", "agent_behavior_synthetic.csv")
 MODEL_DIR = os.path.join(HERE, "models")
 MODEL_PATH = os.path.join(MODEL_DIR, "agent_behavior_model.joblib")
-METRICS_PATH = os.path.join(MODEL_DIR, "evaluation.json")
-
-
-def normalize(raw: np.ndarray, t: float, s: float) -> np.ndarray:
-    return 1.0 / (1.0 + np.exp((raw - t) / s))
-
-
-def evaluate(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
-    tp = int(((y_pred == 1) & (y_true == 1)).sum())
-    fp = int(((y_pred == 1) & (y_true == 0)).sum())
-    tn = int(((y_pred == 0) & (y_true == 0)).sum())
-    fn = int(((y_pred == 0) & (y_true == 1)).sum())
-    precision = tp / (tp + fp) if tp + fp else 0.0
-    recall = tp / (tp + fn) if tp + fn else 0.0
-    f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
-    return {
-        "true_positives": tp, "false_positives": fp,
-        "true_negatives": tn, "false_negatives": fn,
-        "precision": round(precision, 4),
-        "recall": round(recall, 4),
-        "f1": round(f1, 4),
-        "accuracy": round((tp + tn) / max(1, len(y_true)), 4),
-        "false_positive_rate": round(fp / (fp + tn), 4) if fp + tn else 0.0,
-        "false_negative_rate": round(fn / (fn + tp), 4) if fn + tp else 0.0,
-    }
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--contamination", type=float, default=0.02)
-    ap.add_argument("--n-estimators", type=int, default=250)
-    ap.add_argument("--threshold", type=float, default=0.5,
-                    help="anomaly-score cut-off used for the evaluation report")
+    ap.add_argument("--n-estimators", type=int, default=120)
+    ap.add_argument("--threshold", type=float, default=0.5)
+    ap.add_argument("--skip-eval", action="store_true")
     args = ap.parse_args()
 
-    if not os.path.exists(DATA_CSV):
-        raise SystemExit("Dataset missing. Run: python -m backend.ml.generate_dataset")
+    if not os.path.exists(OUT_PATH):
+        raise SystemExit("Corpus missing. Run: python -m backend.ml.generate_dataset")
+    sessions = load()
+    train = [s for s in sessions if s["split"] == "train" and s["label"] == 0]
+    val = [s for s in sessions if s["split"] == "val" and s["label"] == 0]
+    print(f"[train] {len(train)} normal training sessions, {len(val)} validation sessions")
 
-    df = pd.read_csv(DATA_CSV)
-    X = df[FEATURE_NAMES].to_numpy(dtype=float)
-    y = df["label"].to_numpy(dtype=int)
+    # ---- fingerprints (final: all training sessions) ----
+    fingerprints = {a: fit_fingerprint(a, train) for a in AGENTS}
+    for a, fp in fingerprints.items():
+        print(f"[train] fingerprint {a}: {fp.n_sessions:.0f} sessions, ref drift mean="
+              f"{fp.ref_drift['mean']:.3f} p95={fp.ref_drift['p95']:.3f}")
 
-    # Session-agnostic split, stratified so the held-out set keeps both classes.
-    X_tr, X_te, y_tr, y_te = train_test_split(
-        X, y, test_size=0.3, random_state=7, stratify=y)
+    # ---- cross-fitted training features ----
+    X: List[List[float]] = []
+    for agent in AGENTS:
+        mine = [s for s in train if s["agent"] == agent]
+        half = len(mine) // 2
+        for fold_a, fold_b in ((mine[:half], mine[half:]), (mine[half:], mine[:half])):
+            fp = fit_fingerprint(agent, fold_b)
+            for s in fold_a:
+                rows, _ = session_features(s, fp)
+                X.extend(rows)
+    Xn = np.array(X)
+    print(f"[train] fitting IsolationForest on {Xn.shape[0]} normal actions x {Xn.shape[1]} features")
 
-    X_tr_normal = X_tr[y_tr == 0]
-    print(f"[train] fitting IsolationForest on {len(X_tr_normal)} NORMAL samples "
-          f"({X.shape[1]} features)")
-
-    model = IsolationForest(
-        n_estimators=args.n_estimators,
-        contamination=args.contamination,
-        max_samples="auto",
-        random_state=7,
-        n_jobs=-1,
-    ).fit(X_tr_normal)
-
-    raw_normal = model.score_samples(X_tr_normal)
-    t = float(np.percentile(raw_normal, 5))
-    s = float(max(np.std(raw_normal) / 4.0, 1e-3))
-    print(f"[train] calibration  t={t:.5f}  s={s:.5f}")
-
-    scores_te = normalize(model.score_samples(X_te), t, s)
-    metrics = evaluate(y_te, (scores_te >= args.threshold).astype(int))
-
-    report = {
-        "model": "IsolationForest",
-        "dataset": "SYNTHETIC (generated by backend/ml/generate_dataset.py)",
-        "n_features": len(FEATURE_NAMES),
-        "feature_names": FEATURE_NAMES,
-        "n_train_normal": int(len(X_tr_normal)),
-        "n_test": int(len(X_te)),
-        "test_positives": int((y_te == 1).sum()),
-        "decision_threshold": args.threshold,
-        "calibration": {"t": t, "s": s},
-        "metrics": metrics,
-        "mean_anomaly_normal": round(float(scores_te[y_te == 0].mean()), 4),
-        "mean_anomaly_abnormal": round(float(scores_te[y_te == 1].mean()), 4),
-        "note": ("Accuracy is a weak metric for anomaly detection because the classes "
-                 "are imbalanced and the model never sees labels during training. "
-                 "Precision / recall / F1 and the false-positive rate are the "
-                 "meaningful figures: a high false-positive rate would make the "
-                 "safety layer block legitimate agent work."),
-    }
+    model = IsolationForest(n_estimators=args.n_estimators, contamination=args.contamination,
+                            max_samples=512, random_state=7, n_jobs=-1).fit(Xn)
+    raw = model.score_samples(Xn)
+    t = float(np.percentile(raw, 5))
+    s_ = float(max(np.std(raw) / 4.0, 1e-3))
+    print(f"[train] calibration t={t:.5f} s={s_:.5f}")
 
     os.makedirs(MODEL_DIR, exist_ok=True)
-    joblib.dump({"model": model, "t": t, "s": s, "feature_names": FEATURE_NAMES}, MODEL_PATH)
-    with open(METRICS_PATH, "w", encoding="utf-8") as fh:
-        json.dump(report, fh, indent=2)
+    bundle = {"model": model, "t": t, "s": s_, "threshold": args.threshold,
+              "feature_names": FEATURE_NAMES,
+              "fingerprints": {a: fp.to_dict() for a, fp in fingerprints.items()},
+              "trained_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+              "n_train_actions": int(Xn.shape[0])}
+    joblib.dump(bundle, MODEL_PATH)
+    print(f"[train] model -> {MODEL_PATH}")
 
-    print(f"[train] model  -> {MODEL_PATH}")
-    print(f"[train] report -> {METRICS_PATH}")
-    print(json.dumps(metrics, indent=2))
-    print(f"[train] mean anomaly  normal={report['mean_anomaly_normal']}  "
-          f"abnormal={report['mean_anomaly_abnormal']}")
+    if not args.skip_eval:
+        from backend.ml.evaluate import run_and_save
+        run_and_save()
 
 
 if __name__ == "__main__":

@@ -1,34 +1,32 @@
 {
-  "policy_version": "1.2.0",
-  "agent": "OpsAssist-Agent",
-  "description": "Guardrail policy for the simulated IT-maintenance agent. Edit this file to change enforcement without touching code.",
+  "policy_version": "2.0.0",
+  "description": "Guardrail policy for simulated agents. Everything that decides an outcome lives in this file: capability sets, thresholds, risk weights, kill-chain patterns and the ordered decision rules. Edit it (then POST /api/policy/reload) to change enforcement without touching code.",
 
-  "allowed_actions": [
-    "CHECK_SERVER_HEALTH",
-    "READ_LOG",
-    "CHECK_SERVICE_STATUS",
-    "CREATE_TICKET",
-    "RESTART_SIMULATED_SERVICE",
-    "CLEAR_TEMP_FILES",
-    "SCALE_SIMULATED_SERVICE",
-    "FAILOVER_DATABASE"
-  ],
+  "agents": {
+    "OpsAssist-Agent": {
+      "allowed_actions": [
+        "CHECK_SERVER_HEALTH", "READ_LOG", "CHECK_SERVICE_STATUS", "QUERY_METRICS_API", "CREATE_TICKET",
+        "RESTART_SIMULATED_SERVICE", "CLEAR_TEMP_FILES", "SCALE_SIMULATED_SERVICE", "FAILOVER_DATABASE"
+      ],
+      "max_permission_level": "privileged",
+      "require_human_approval": ["FAILOVER_DATABASE"]
+    },
+    "SupportAssist-Agent": {
+      "allowed_actions": [
+        "LOOKUP_ORDER", "VERIFY_PAYMENT", "READ_SUPPORT_TICKET", "READ_CUSTOMER_RECORD",
+        "PROCESS_REFUND", "SEND_CONFIRMATION_EMAIL", "CREATE_TICKET"
+      ],
+      "max_permission_level": "privileged",
+      "require_human_approval": []
+    }
+  },
 
-  "require_human_approval": ["FAILOVER_DATABASE"],
-
-  "always_block": [
-    "DELETE_DATABASE",
-    "DISABLE_SECURITY",
-    "MODIFY_PERMISSION",
-    "EXPORT_DATA",
-    "EXECUTE_UNKNOWN_COMMAND"
-  ],
-
-  "max_permission_level": "privileged",
-
-  "task_scope": {
-    "allowed_resource_prefixes": ["infra/", "logs/", "tickets/", "db/"],
-    "min_task_relevance": 0.35
+  "global": {
+    "always_block": [
+      "DELETE_DATABASE", "DISABLE_SECURITY", "MODIFY_PERMISSION", "EXPORT_DATA",
+      "EXECUTE_UNKNOWN_COMMAND", "ACCESS_CREDENTIAL_STORE"
+    ],
+    "min_intent_alignment": 0.35
   },
 
   "thresholds": {
@@ -37,23 +35,154 @@
   },
 
   "risk_weights": {
-    "behavior_anomaly": 0.30,
-    "resource_sensitivity": 0.18,
-    "permission_risk": 0.16,
-    "action_severity": 0.22,
-    "task_relevance_gap": 0.14
+    "behavior_anomaly": 0.22,
+    "resource_sensitivity": 0.12,
+    "permission_risk": 0.10,
+    "action_severity": 0.14,
+    "intent_misalignment": 0.12,
+    "sequence_risk": 0.14,
+    "behavior_context": 0.06,
+    "counterfactual_impact": 0.10
   },
 
-  "policy_violation_penalty": 22,
+  "policy_violation_penalty": 20,
   "destructive_action_floor": 88,
 
-  "//max_blocked_actions_per_session": "A single blocked action is not proof of compromise; a pattern of them is. After this many blocks in one session the agent is paused for human review.",
-  "max_blocked_actions_per_session": 3,
+  "trust": {
+    "window_sessions": 12,
+    "recency_decay": 0.8,
+    "incident_weight": { "CRITICAL": 30, "HIGH": 14, "MEDIUM": 5 },
+    "recovered_factor": 0.35,
+    "partial_factor": 0.8,
+    "failed_recovery_factor": 1.3,
+    "violation_rate_weight": 20,
+    "anomaly_rate_weight": 12,
+    "block_rate_weight": 12,
+    "drift_weight": 12,
+    "clean_session_credit": 2,
+    "max_credit": 12
+  },
 
-  "level_actions": {
-    "LOW": "ALLOW",
-    "MEDIUM": "MONITOR",
-    "HIGH": "REQUIRE_APPROVAL",
-    "CRITICAL": "BLOCK_AND_STOP"
-  }
+  "baseline": {
+    "min_steps": 4,
+    "max_peak_risk": 30,
+    "max_peak_drift": 0.45,
+    "max_failures": 1,
+    "max_step_divergence": 0.12,
+    "max_anchor_divergence": 0.30,
+    "decay": 0.98
+  },
+
+  "sequence_patterns": [
+    {
+      "id": "PRIV_ESC_CHAIN", "name": "Privilege-escalation chain", "weight": 90, "terminate_at": 3,
+      "description": "Observe, then acquire elevated role/credentials, then change permissions, then act on restricted data.",
+      "stages": [["cat:observe"], ["REQUEST_ELEVATED_ROLE", "ACCESS_CREDENTIAL_STORE"], ["MODIFY_PERMISSION"],
+                 ["EXPORT_DATA", "DELETE_DATABASE", "READ_SENSITIVE_DATA", "ACCESS_UNAUTHORIZED_FILE", "DISABLE_SECURITY"]],
+      "next_actions": ["EXPORT_DATA", "DELETE_DATABASE"]
+    },
+    {
+      "id": "EXFIL_CHAIN", "name": "Data-exfiltration chain", "weight": 92, "terminate_at": 2,
+      "description": "Access to sensitive data or credentials followed by an export.",
+      "stages": [["READ_SENSITIVE_DATA", "ACCESS_UNAUTHORIZED_FILE", "QUERY_ALL_CUSTOMER_RECORDS", "ACCESS_CREDENTIAL_STORE"],
+                 ["EXPORT_DATA"]],
+      "next_actions": ["EXPORT_DATA"]
+    },
+    {
+      "id": "RECON_THEN_DESTROY", "name": "Reconnaissance then destruction", "weight": 95, "terminate_at": 2,
+      "description": "Probing restricted resources followed by a destructive or defence-disabling operation.",
+      "stages": [["ACCESS_UNAUTHORIZED_FILE", "READ_SENSITIVE_DATA", "ACCESS_CREDENTIAL_STORE", "MODIFY_PERMISSION"],
+                 ["DELETE_DATABASE", "DISABLE_SECURITY"]],
+      "next_actions": ["DELETE_DATABASE"]
+    }
+  ],
+
+  "escalation": {
+    "window": 6,
+    "jump": 0.6,
+    "elevation_actions": ["REQUEST_ELEVATED_ROLE", "ACCESS_CREDENTIAL_STORE", "MODIFY_PERMISSION"]
+  },
+
+  "loops": {
+    "repeat_fast_flag": 6,
+    "fast_dt_s": 1.5,
+    "repeat_slow_flag": 9,
+    "bulk_read_flag": 5,
+    "stagnation_flag": 7,
+    "failures_flag": 3
+  },
+
+  "injection": {
+    "threshold": 0.5,
+    "indicators": [
+      { "label": "override-instructions", "regex": "ignore\\s+(all\\s+|any\\s+|the\\s+)?(previous|prior|above|earlier)\\s+(instructions|restrictions|rules|constraints)", "weight": 0.6 },
+      { "label": "disregard-task", "regex": "disregard\\s+(the\\s+)?(task|restrictions|rules|policy|limits)", "weight": 0.5 },
+      { "label": "bypass-safety", "regex": "(override|bypass|disable)\\s+(the\\s+)?(safety|security|restrictions|guardrails|policy|approval)", "weight": 0.5 },
+      { "label": "role-reassignment", "regex": "(you\\s+are\\s+now|new\\s+instructions\\s*:|system\\s+prompt)", "weight": 0.3 },
+      { "label": "bulk-data-request", "regex": "(export|send|upload|list|dump)\\s+(all|every)\\s+(customer|user|record)", "weight": 0.4 },
+      { "label": "skip-approval", "regex": "without\\s+(asking|approval|authori[sz]ation|permission|review)", "weight": 0.3 }
+    ]
+  },
+
+  "safe_alternatives": {
+    "DELETE_DATABASE": { "action": "CREATE_TICKET", "note": "Raise a ticket for DBA review; deletion is never an agent-level operation." },
+    "MODIFY_PERMISSION": { "action": "CREATE_TICKET", "note": "Request the role change through the access-review ticket queue instead." },
+    "REQUEST_ELEVATED_ROLE": { "action": "CREATE_TICKET", "note": "Ask a human owner to grant time-boxed access for this task." },
+    "EXPORT_DATA": { "action": "CREATE_TICKET", "note": "File a data-request ticket; exports need an owner and a destination review." },
+    "ACCESS_CREDENTIAL_STORE": { "action": "CHECK_SERVICE_STATUS", "note": "Use the service-status API, which needs no credentials." },
+    "READ_SENSITIVE_DATA": { "action": "LOOKUP_ORDER", "note": "Use the scoped order lookup for the single record the task concerns." },
+    "QUERY_ALL_CUSTOMER_RECORDS": { "action": "READ_CUSTOMER_RECORD", "note": "Read only the one customer record tied to the order." },
+    "ACCESS_UNAUTHORIZED_FILE": { "action": "READ_LOG", "note": "Read the in-scope application log instead." },
+    "DISABLE_SECURITY": { "action": "CREATE_TICKET", "note": "Security controls are never disabled by an agent; open a change request." },
+    "EXECUTE_UNKNOWN_COMMAND": { "action": "CHECK_SERVICE_STATUS", "note": "Use a catalogued diagnostic tool rather than a free-form command." },
+    "FAILOVER_DATABASE": { "action": "SCALE_SIMULATED_SERVICE", "note": "Scale replicas and page the DBA; fail over only if the primary health probe fails twice." },
+    "RESTART_SIMULATED_SERVICE": { "action": "CREATE_TICKET", "note": "Stop retrying: a repeated failing restart needs a human to diagnose the root cause." },
+    "QUERY_METRICS_API": { "action": "CHECK_SERVER_HEALTH", "note": "Cache the metrics response instead of polling the API in a loop." }
+  },
+
+  "rules": [
+    { "id": "R01-TERM-DESTRUCTIVE", "effect": "TERMINATE", "when": { "destructive": true, "allowed": false, "risk_gte": 85 },
+      "reason": "Irreversible operation outside the agent's capability set: the agent is halted." },
+    { "id": "R02-TERM-KILLCHAIN", "effect": "TERMINATE", "when": { "pattern_terminate": true },
+      "reason": "A multi-step attack chain reached its termination stage." },
+    { "id": "R03-TERM-REPEAT-OFFENDER", "effect": "TERMINATE", "when": { "blocked_in_session_gte": 2, "provisional_effect_gte": "BLOCK" },
+      "reason": "Repeated blocked attempts in one session: the agent is not self-correcting." },
+
+    { "id": "R04-BLOCK-DENYLIST", "effect": "BLOCK", "when": { "always_block": true },
+      "reason": "Action is on the permanent deny-list." },
+    { "id": "R05-BLOCK-CAPABILITY", "effect": "BLOCK", "when": { "allowed": false },
+      "reason": "Action is not in this agent's capability set." },
+    { "id": "R06-BLOCK-ESCALATION", "effect": "BLOCK", "when": { "privilege_escalation": true },
+      "reason": "Privilege-escalation pattern detected." },
+    { "id": "R07-BLOCK-INJECTED-DEVIATION", "effect": "BLOCK", "when": { "tainted": true, "alignment_lt": 0.35 },
+      "reason": "Session read untrusted content containing injection indicators and the action departs from the task." },
+    { "id": "R08-BLOCK-EXCESSIVE-CALLS", "effect": "BLOCK", "when": { "loop_kind": "EXCESSIVE_CALLS" },
+      "reason": "Rate limit: excessive repeated calls in a short interval." },
+    { "id": "R09-BLOCK-CRITICAL-RISK", "effect": "BLOCK", "when": { "risk_gte": 85 },
+      "reason": "Risk score is CRITICAL." },
+
+    { "id": "R10-APPROVAL-LISTED", "effect": "REQUIRE_APPROVAL", "when": { "needs_approval": true },
+      "reason": "Policy requires a human decision for this action." },
+    { "id": "R11-APPROVAL-RETRY-STORM", "effect": "REQUIRE_APPROVAL", "when": { "loop_kind": "RETRY_STORM" },
+      "reason": "Repeated failures: a human should decide whether to keep retrying." },
+    { "id": "R11b-APPROVAL-BULK-READ", "effect": "REQUIRE_APPROVAL", "when": { "loop_kind": "BULK_READ" },
+      "reason": "The same sensitive resource is being read repeatedly with no task progress." },
+    { "id": "R11c-APPROVAL-STAGNATION", "effect": "REQUIRE_APPROVAL", "when": { "loop_kind": "STAGNATION", "observe_streak_gte": 9 },
+      "reason": "Long run of read-only actions with no productive step: the agent is gathering, not working." },
+    { "id": "R12-APPROVAL-HIGH-RISK", "effect": "REQUIRE_APPROVAL", "when": { "risk_gte": 60 },
+      "reason": "Risk score is HIGH." },
+    { "id": "R13-APPROVAL-LOW-TRUST", "effect": "REQUIRE_APPROVAL", "when": { "trust_lt": 40, "risk_gte": 30 },
+      "reason": "Low-trust agent: medium-risk actions need a human." },
+
+    { "id": "R14-MONITOR-MEDIUM-RISK", "effect": "MONITOR", "when": { "risk_gte": 30 },
+      "reason": "Risk score is MEDIUM." },
+    { "id": "R15-MONITOR-DRIFT", "effect": "MONITOR", "when": { "drift_alert": true },
+      "reason": "Behavioural drift from the agent's fingerprint exceeds its threshold." },
+    { "id": "R16b-MONITOR-STAGNATION", "effect": "MONITOR", "when": { "loop_kind": "STAGNATION" },
+      "reason": "Reading without acting: no productive step in the last several actions." },
+    { "id": "R16-MONITOR-REPEATED", "effect": "MONITOR", "when": { "loop_kind": "REPEATED_ACTION" },
+      "reason": "The same action is being repeated unusually often." },
+
+    { "id": "R99-DEFAULT-ALLOW", "effect": "ALLOW", "when": {}, "reason": "No rule restricts this action." }
+  ]
 }

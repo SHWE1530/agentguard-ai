@@ -4,34 +4,40 @@
 @tailwind utilities;
 
 @layer base {
-  html {
-    color-scheme: dark;
+  :root {
+    color-scheme: light;
+    /* text/ink colour that Tailwind's `white` resolves to in this white theme */
+    --c-fg: 15 23 42;
+    /* surfaces */
+    --ink-950: 255 255 255;   /* page */
+    --ink-900: 255 255 255;   /* cards */
+    --ink-850: 248 250 252;   /* inset panels */
+    --ink-800: 241 245 249;
+    --ink-700: 226 232 240;   /* bar tracks */
+    --ink-600: 203 213 225;
+    /* text scale (names kept from the dark UI: 100 = strongest) */
+    --sl-50: 248 250 252; --sl-100: 15 23 42; --sl-200: 30 41 59; --sl-300: 51 65 85; --sl-400: 71 85 105;
+    --sl-500: 100 116 139; --sl-600: 116 130 150; --sl-700: 148 163 184; --sl-800: 203 213 225; --sl-900: 226 232 240;
+    /* status colours, darkened for contrast on white */
+    --safe: 22 163 74; --warn: 180 120 4; --high: 234 88 12; --crit: 220 38 38; --ai: 124 58 237; --beam: 2 132 199;
   }
+  html { color-scheme: light; }
   body {
     @apply bg-ink-950 text-slate-200 antialiased;
     background-image:
-      radial-gradient(60rem 40rem at 12% -10%, rgba(56, 189, 248, 0.09), transparent 60%),
-      radial-gradient(50rem 36rem at 92% 4%, rgba(139, 92, 246, 0.10), transparent 60%);
+      radial-gradient(60rem 34rem at 10% -12%, rgba(2, 132, 199, 0.07), transparent 60%),
+      radial-gradient(50rem 30rem at 95% -4%, rgba(124, 58, 237, 0.06), transparent 60%);
     background-attachment: fixed;
   }
-  ::-webkit-scrollbar {
-    width: 9px;
-    height: 9px;
-  }
-  ::-webkit-scrollbar-track {
-    background: transparent;
-  }
-  ::-webkit-scrollbar-thumb {
-    @apply bg-ink-700 rounded-full;
-  }
-  ::-webkit-scrollbar-thumb:hover {
-    @apply bg-ink-600;
-  }
+  ::-webkit-scrollbar { width: 9px; height: 9px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { @apply bg-ink-600 rounded-full; }
+  ::-webkit-scrollbar-thumb:hover { @apply bg-slate-700; }
 }
 
 @layer components {
   .card {
-    @apply rounded-xl border border-white/[0.07] bg-ink-900/70 backdrop-blur-sm shadow-lg shadow-black/20;
+    @apply rounded-xl border border-white/[0.09] bg-ink-900 shadow-sm shadow-slate-900/[0.06];
   }
   .card-pad {
     @apply p-4 sm:p-5;
@@ -44,16 +50,16 @@
            transition-colors disabled:cursor-not-allowed disabled:opacity-45;
   }
   .btn-primary {
-    @apply btn bg-beam text-ink-950 hover:bg-sky-300;
+    @apply btn bg-beam text-ink-950 hover:opacity-90;
   }
   .btn-ghost {
-    @apply btn border border-white/10 bg-white/[0.03] text-slate-200 hover:bg-white/[0.08];
+    @apply btn border border-white/[0.14] bg-ink-900 text-slate-200 hover:bg-ink-850;
   }
   .btn-danger {
-    @apply btn bg-crit text-white hover:bg-red-500;
+    @apply btn bg-crit text-[#ffffff] hover:opacity-90;
   }
   .btn-safe {
-    @apply btn bg-safe text-ink-950 hover:bg-green-400;
+    @apply btn bg-safe text-ink-950 hover:opacity-90;
   }
   .input {
     @apply w-full rounded-lg border border-white/10 bg-ink-850 px-3 py-2 text-sm text-slate-200

@@ -15,6 +15,7 @@ const STATUS_CLASS: Record<string, string> = {
   RECOVERED: 'bg-safe/12 text-safe ring-safe/30',
   RESOLVED: 'bg-safe/12 text-safe ring-safe/30',
   RECOVERY_FAILED: 'bg-crit/12 text-crit ring-crit/30',
+  RECOVERY_PARTIAL: 'bg-warn/12 text-warn ring-warn/30',
 }
 
 export default function Incidents() {
@@ -32,8 +33,8 @@ export default function Incidents() {
       const res = await api.recover(id)
       setMsg(
         res.verified
-          ? `${res.reference}: state restored and verified healthy.`
-          : `${res.reference}: recovery ran but verification FAILED — ${res.verification.summary}`,
+          ? `${res.reference}: state restored and verified healthy (state and integrity).`
+          : `${res.reference}: ${res.outcome} recovery on attempt ${res.attempt}. Verification FAILED — ${res.verification.summary} Open the incident to retry.`,
       )
       reload()
     } catch (e) {
@@ -47,7 +48,7 @@ export default function Incidents() {
   if (error) return <ErrorState message={error} onRetry={reload} />
 
   const incidents = (data ?? []).filter(
-    (i) => filter === 'ALL' || (filter === 'ACTIVE' ? i.status === 'OPEN' : i.severity === filter),
+    (i) => filter === 'ALL' || (filter === 'ACTIVE' ? ['OPEN', 'RECOVERING', 'RECOVERY_PARTIAL', 'RECOVERY_FAILED'].includes(i.status) : i.severity === filter),
   )
 
   return (
@@ -94,7 +95,7 @@ export default function Incidents() {
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
           {incidents.map((i: Incident) => {
             const color = RISK_COLOR[i.severity as RiskLevel] ?? '#64748b'
-            const done = i.status === 'RESOLVED' || i.status === 'RECOVERED'
+            const done = i.status === 'RESOLVED'
             return (
               <article
                 key={i.id}
@@ -149,7 +150,7 @@ export default function Incidents() {
                     ) : (
                       <RotateCcw size={13} />
                     )}
-                    {done ? 'Recovered' : 'Start recovery'}
+                    {done ? 'Recovered' : i.recovery_attempts ? 'Retry recovery' : 'Start recovery'}
                   </button>
                 </div>
               </article>
