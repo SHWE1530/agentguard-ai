@@ -4,7 +4,12 @@ services:
     env: docker
     dockerfilePath: ./Dockerfile
     plan: free
-    healthCheckPath: /docs
+    healthCheckPath: /api/health
+    envVars:
+      - key: PORT
+        value: "8000"
+      - key: CORS_ORIGINS
+        value: "*"
 
   - type: web
     name: agent-sentinel-frontend
@@ -12,6 +17,8 @@ services:
     buildCommand: cd frontend && npm install && npm run build
     staticPublishPath: ./frontend/dist
     envVars:
+      - key: NODE_VERSION
+        value: "20"
       - key: VITE_API_BASE
         fromService:
           type: web
@@ -21,3 +28,4 @@ services:
       - type: rewrite
         source: /*
         destination: /index.html
+
